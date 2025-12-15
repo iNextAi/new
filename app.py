@@ -1,4 +1,7 @@
-# backend.py
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 from fastapi import FastAPI, WebSocket, HTTPException, Path, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -16,7 +19,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.cluster import KMeans
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# import logging
 import websockets
 import openai
 import httpx
@@ -42,12 +44,10 @@ import logging
 
 import os
 
-# AUTO TEST MODE — Remove this line when deploying to Render!
-os.environ["TEST_MODE"] = "true"   # ← DELETE THIS LINE IN PRODUCTION!
-
-# Configuration and ML model load
+ 
+ 
 try:
-    # Configuration
+    
     DATA_DIR = "./data"
     os.makedirs(DATA_DIR, exist_ok=True)
     MODEL_PATH = os.path.join(DATA_DIR, "global_model.pkl")
@@ -61,21 +61,39 @@ try:
     os.makedirs(SEGMENT_DIR, exist_ok=True)
     os.makedirs(USER_BIAS_DIR, exist_ok=True)
 
-    
-    OPENAI_API_KEY = "your-openai-api-key"  # Replace with your actual OpenAI API key
-    # Initialize OpenAI client
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
 except Exception as e:
     pass
 
-DATABASE = "trading_app.db"
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
+ 
+PORT = int(os.getenv("PORT", 8000))
+HOST = os.getenv("HOST", "0.0.0.0")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    print("OpenAI client initialized successfully")
+else:
+    print("WARNING: OPENAI_API_KEY not found in .env file")
+    print("Some AI features will be disabled")
+    client = None
+
+DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trading_app.db")
+
+ 
+JWT_SECRET = os.getenv("JWT_SECRET", "your-256-bit-secret-for-INextAI-in-production!!!")
+JWT_ALGORITHM = "HS256"
+ACCESS_EXPIRE_MIN = 15
+REFRESH_EXPIRE_DAYS = 7
+ETH_RPC = os.getenv("ETH_RPC_URL", "https://eth-mainnet.g.alchemy.com/v2/demo")
+SOLANA_RPC = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+
+ 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 
 
-# # Global model objects + locks
 model: Optional[RandomForestClassifier] = None 
 le: Optional[LabelEncoder] = None
 cluster_model = None
@@ -85,7 +103,6 @@ model_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
 scheduler = AsyncIOScheduler()
 
-# for deploytation enhancement from the above
 async def load_or_init_model():
     global model, le
     if os.path.exists(MODEL_PATH) and os.path.exists(ENCODER_PATH):
@@ -98,11 +115,9 @@ async def load_or_init_model():
         print("Fallback model trained & saved")
     pass
 
-# In-memory storage for users, moods, journal
 users = {}
 moods = {}
 
-# Pydantic models
 class PerformanceMetric(BaseModel):
     id: str
     metric: str
@@ -311,7 +326,6 @@ class JournalEntry(BaseModel):
 class ResetRequest(BaseModel):
     user_id: str
 
-# ArcheType models
 class Archetype(str, Enum):
     FOMO_APE = "fomo_ape"
     GREEDY_BULL = "greedy_bull"
@@ -355,7 +369,6 @@ class TradingPatterns(BaseModel):
     greed_score: float
     fear_score: float
 
-# Market Trend Models
 class TechnicalIndicators(BaseModel):
     symbol: str
     rsi: float
@@ -414,38 +427,35 @@ class WalletConnectRequest(BaseModel):
     message: str = Field(..., example=f"Login to Mindful Trading at {datetime.utcnow().isoformat()}")
     chainId: Optional[int] = Field(1, example=1, description="1=ETH, 137=Polygon, 56=BSC")
 
-# ===========================================================================
-# Helper functions
+ 
 
 def validate_wallet_address(wallet_type: str, address: str) -> bool:
     """
     Validates wallet address format.
     - In development/testing: accepts obvious dummy values like "string", "test", "dev"
-    - In production/real use: enforces Fstrict format
+    - In production/real use: enforces strict format
     """
     address = address.strip()
     
-    # === DEV/TEST MODE — allow obvious dummy values (so Swagger stops screaming red) ===
-    if address.lower() in {"0x71C7656EC7ab88b098defB751B7401B5f6d8976F","string", "test", "dev", "demo", "123", "0xtest", "aaaaa-aa"}:
+    
+    if TEST_MODE and address.lower() in {"0x71C7656EC7ab88b098defB751B7401B5f6d8976F","string", "test", "dev", "demo", "123", "0xtest", "aaaaa-aa"}:
         return True
     
-    # === REAL VALIDATION ===
+    
     if wallet_type == "internet_identity":
-        # ICP principal (most common is 63 chars, but many are shorter)
-        # Accepts canonical text form and the simple aaaaa-aa form
+        
         return bool(re.match(r'^[a-z0-9\-]{5,63}$', address)) or address == "aaaaa-aa"
     
     elif wallet_type in {"metamask", "phantom", "trustwallet", "rainbow", "coinbase_wallet"}:
-        # EVM chains (Ethereum, BSC, Polygon, etc.)
+        
         if re.match(r'^0x[a-fA-F0-9]{40}$', address):
             return True
-        # Solana / Base58 (Phantom, etc.) — 32–44 chars
+        
         if wallet_type == "phantom" and re.match(r'^[1-9A-HJ-NP-Za-km-z]{32,44}$', address):
             return True
     
     return False
 
-# Feature engineering function
 def engineer_features(df):
     df = df.copy() # a benign collection of data frame
     df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -471,7 +481,6 @@ def engineer_features(df):
     df['consecutive_wins'] = (df['pnl'] > 0).rolling(window=3).sum()
     return df.fillna(0)  # Handle NaN values
 
-# Prepare ML data from last 3 trades
 def prepare_ml_data(df):
     features = ['time_diff', 'price_change_pct', 'position_change', 'consecutive_wins', 'consecutive_losses', 'win_streak', 'loss_streak']
     ml_data = []
@@ -496,14 +505,11 @@ def prepare_ml_data(df):
             })
     return pd.DataFrame(ml_data) if ml_data else pd.DataFrame()
 
-# =========================
-# PREDICTION (Hybrid: Segment → Bias → Global)
-# =========================
 def predict_next_emotion(df: pd.DataFrame, user_id: str = None):
     if len(df) < 4:
         return "neutral", 0.6
 
-    # Feature vector from last 3 trades
+    
     last3 = df.tail(3)
     X_pred = np.array([[
         last3['time_diff'].mean(),
@@ -511,11 +517,11 @@ def predict_next_emotion(df: pd.DataFrame, user_id: str = None):
         last3['amount_in'].mean()
     ]])
 
-    # 1. Try segment model
+    
     seg = predict_user_segment(df) if user_id else None
     model_to_use = segment_models.get(seg, global_model) if seg is not None else global_model
 
-    # 2. Predict
+    
     if model_to_use is None:
         emotion = "neutral"
         prob = 0.5
@@ -525,11 +531,11 @@ def predict_next_emotion(df: pd.DataFrame, user_id: str = None):
         emotion = le.inverse_transform([pred_class])[0]
         prob = pred_proba.max()
 
-    # 3. Apply user bias (optional fine-tuning)
+    
     if user_id:
         bias = load_user_bias(user_id)
         if bias:
-            # Simple additive bias
+            
             biased_proba = pred_proba.copy()
             for i, label in enumerate(le.classes_):
                 biased_proba[i] += bias.get(label, 0)
@@ -541,7 +547,6 @@ def predict_next_emotion(df: pd.DataFrame, user_id: str = None):
     return emotion, float(prob)
 
 
-# Emotion detection
 def detect_emotion(df):
     df['emotion'] = 'neutral'
     df['trigger_details'] = None
@@ -561,19 +566,16 @@ def detect_emotion(df):
             df.loc[i, 'trigger_details'] = f"Early close: {curr_row['pnl']:.2f}, latency: {curr_row['time_diff']}"
     return df
 
-# ---------------------------------------------------------
-# OpenAI helper
-# ---------------------------------------------------------
 def call_openai_warning(df: pd.DataFrame, predicted_emotion: str) -> Dict[str, Any]:
     """Ask OpenAI to turn features into a human-friendly warning.
     Returns a robust JSON even if OpenAI isn't configured.
     """
-    if openai is None or not os.getenv("OPENAI_API_KEY"):
+    if client is None:
         return {
-            "insight": "Heuristic-only: model suggests {}.".format(predicted_emotion),
-            "warning": "Trading psychology signal generated without OpenAI.",
-            "recommendation": "Reduce leverage, avoid rapid entries, set stops.",
-            "advice": "Take a short break before placing the next trade.",
+            "insight": f"Heuristic-only: model suggests {predicted_emotion}.",
+            "warning": "OpenAI API key not configured. Set OPENAI_API_KEY in .env file.",
+            "recommendation": "Configure OpenAI for personalized insights.",
+            "advice": "Set your API key in the .env file.",
         }
 
     try:
@@ -592,7 +594,7 @@ def call_openai_warning(df: pd.DataFrame, predicted_emotion: str) -> Dict[str, A
         content = resp.choices[0].message.content if resp and resp.choices else "{}"
         try:
             parsed = json.loads(content)
-            # minimal validation
+            
             for k in ["insight", "warning", "recommendation", "advice"]:
                 parsed.setdefault(k, "")
             return parsed
@@ -613,15 +615,11 @@ def call_openai_warning(df: pd.DataFrame, predicted_emotion: str) -> Dict[str, A
         }
 
 
-# =========================
-# FIXED FULL RETRAIN — NEVER BREAKS AGAIN
-# =========================
 async def full_retrain():
     global global_model, le, cluster_model, segment_models, scaler
 
-    # logger.info("Starting scheduled hybrid retraining...")
-
-    # Load data
+    
+    
     try:
         conn = sqlite3.connect(DATABASE)
         trades_df = pd.read_sql_query("SELECT * FROM trades", conn)
@@ -638,10 +636,10 @@ async def full_retrain():
 
     all_df = pd.concat([trades_df, book_df], ignore_index=True) if not trades_df.empty or not book_df.empty else pd.DataFrame()
 
-    # CRITICAL FIX: Always create a REAL model instance
+    
     if all_df.empty or len(all_df) < 10:
-        # logger.warning("Not enough data — creating safe fallback model")
-        # Create minimal valid data
+        
+        
         dummy = pd.DataFrame({
             'time_diff': [60, 30, 10],
             'pnl': [10.0, -5.0, 8.0],
@@ -651,23 +649,23 @@ async def full_retrain():
         X_dummy = dummy[['time_diff', 'pnl', 'amount_in']].values
         y_dummy = dummy['emotion']
 
-        # ALWAYS create real objects
+        
         le_new = LabelEncoder()
         le_new.fit(y_dummy)
         model_new = RandomForestClassifier(n_estimators=100, random_state=42, warm_start=True)
         model_new.fit(X_dummy, le_new.transform(y_dummy))
 
-        # Safe atomic swap
+        
         async with model_lock:
             global_model = model_new
             le = le_new
             joblib.dump(global_model, MODEL_PATH)
             joblib.dump(le, ENCODER_PATH)
 
-        # logger.info("Fallback model created and saved")
+        
         return  # Exit early
 
-    # NORMAL PATH — REAL DATA
+    
     try:
         all_df = engineer_features(all_df)
         all_df = detect_emotion(all_df)
@@ -689,16 +687,16 @@ async def full_retrain():
         )
         model_new.fit(X, y_enc)
 
-        # Atomic update
+        
         async with model_lock:
             global_model = model_new
             le = le_new
             joblib.dump(global_model, MODEL_PATH)
             joblib.dump(le, ENCODER_PATH)
 
-        # logger.info(f"Global model retrained successfully on {len(X)} samples")
+        
 
-        # === CLUSTERING (safe) ===
+        
         fingerprints = []
         valid_users = []
         for uid, g in all_df.groupby('user_id'):
@@ -721,14 +719,14 @@ async def full_retrain():
             joblib.dump(cluster_model_new, CLUSTER_PATH)
             joblib.dump(scaler_new, os.path.join(DATA_DIR, "scaler.pkl"))
 
-            # Retrain segment models...
-            # (same as before — omitted for brevity, but safe)
+            
+            
 
-        # logger.info("Full retraining completed without errors")
+        
 
     except Exception as e:
-        # logger.error(f"Retraining failed but system remains stable: {e}")
-        # Never let it crash the scheduler
+        
+        
         pass
 
 def load_book_xlsx():
@@ -783,7 +781,6 @@ def save_user_bias(user_id: str, bias: dict):
     with open(os.path.join(USER_BIAS_DIR, f"{user_id}.json"), "w") as f:
         json.dump(bias, f)
 
-# Reuse your existing OpenAI function (already perfect)
 async def generate_ai_insights_and_triggers(user_id: str) -> dict:
     conn = sqlite3.connect(DATABASE)
     df = pd.read_sql_query(
@@ -873,7 +870,6 @@ async def generate_ai_insights_and_triggers(user_id: str) -> dict:
         ]
     }
 
-# Warning and recommendation generation
 async def get_emotion_warning(wallet_df, predicted_emotion):
     recent_trades = wallet_df.tail(3).to_dict(orient='records')
     prompt = f"""
@@ -899,8 +895,8 @@ async def get_emotion_warning(wallet_df, predicted_emotion):
             "advice": "Contact support"
         }
 
-# Database setup
 def init_db():
+    os.makedirs("./data", exist_ok=True)
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -1107,10 +1103,9 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Initialize database
 init_db()
 
-# === GLOBAL IN-MEMORY PRICE CACHE (updated every 2 seconds) ===
+ 
 price_cache: dict[str, dict] = {}
 last_update = 0
 
@@ -1205,10 +1200,8 @@ async def lifespan(app: FastAPI):
 
     scheduler.shutdown()
 
-# Initialize FastAPI app
 app = FastAPI(lifespan=lifespan, title="Trading Psychology Backend", version="1.0", docs_url="/docs")
 
-# CORS configuration for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], # "http://localhost:8000", "http://127.0.0.1:8000", "https://inextai.vercel.app", "https://inextai1.netlify.app"],  # Match frontend origin allowing multiple origin #### very useless,
@@ -1217,9 +1210,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Endpoints
+ 
 
-# Start background updater
 @app.on_event("startup")
 async def start_price_updater():
     async def runner():
@@ -1235,7 +1227,6 @@ def emotional_trends(user_id: str): # changed from _int_ to _str_
     return {"count": len(rows), "rows": rows}
 
 
-# ==================== CONFIG & LOGGING ====================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1244,14 +1235,12 @@ JWT_ALGORITHM = "HS256"
 ACCESS_EXPIRE_MIN = 15
 REFRESH_EXPIRE_DAYS = 7
 
-# RPCs (use Alchemy/Infura recommended)
 ETH_RPC = os.getenv("ETH_RPC_URL", "https://eth-mainnet.g.alchemy.com/v2/demo")
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 
-# Rate limiting
 request_log = {}
 
-# ==================== JWT & AUTH ====================
+ 
 def create_tokens(user_id: str, wallet: str):
     access = jwt.encode({
         "wallet": wallet.lower(),
@@ -1279,7 +1268,7 @@ def rate_limit(request: Request, limit: int = 100):
     times.append(now)
     request_log[ip] = times
 
-# ==================== SIGNATURE VERIFICATION ====================
+ 
 async def verify_evm_signature(address: str, signature: str, message: str) -> bool:
     try:
         # Generate a new private key
@@ -1404,7 +1393,7 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
     msg = request.message
 
     # === DEV/TEST MODE — allow obvious dummy values (so Swagger stops screaming red) ===
-    if address.lower() in {"0x71C7656EC7ab88b098defB751B7401B5f6d8976", "demo", "123", "0xtest1234", "aaaaa-aa", "0xt71C7656EC7ab88b098defB751B7401B5f6d8976F"}:
+    if TEST_MODE and address.lower() in {"0x71C7656EC7ab88b098defB751B7401B5f6d8976", "demo", "123", "0xtest1234", "aaaaa-aa", "0xt71C7656EC7ab88b098defB751B7401B5f6d8976F"}:
         balance = {"native": 0.0, "usd": 0.0, "symbol": "LSK"}
         response = JSONResponse({
             "status": "connected",
@@ -3583,17 +3572,23 @@ def calculate_technical_indicators(df: pd.DataFrame, symbol: str) -> dict:
 async def root():
     return {"message": "Welcome to the Trading App Backend! Visit localhost:8000/docs for API documentation."}
 
-# Global error handler hope it work as suppose
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": os.path.exists(DATABASE),
+        "openai_configured": bool(OPENAI_API_KEY)
+    }
+
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import traceback
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Global error logger
 @app.exception_handler(Exception)
 async def catch_all_handler(request, exc):
     logger.error(f"Request failed: {request.url}")
@@ -3603,7 +3598,28 @@ async def catch_all_handler(request, exc):
 
 
 
-# Run the server
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8000"))
+    debug = os.getenv("DEBUG", "false").lower() == "true"
+    
+    print("=" * 50)
+    print("Trading Psychology Backend")
+    print("=" * 50)
+    print(f"Database: {DATABASE}")
+    print(f"OpenAI configured: {bool(OPENAI_API_KEY)}")
+    print(f"JWT Secret set: {bool(JWT_SECRET)}")
+    print(f"Host: {host}")
+    print(f"Port: {port}")
+    print(f"Debug mode: {debug}")
+    print(f"Test mode: {TEST_MODE}")
+    print("=" * 50)
+    
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=debug
+    )
