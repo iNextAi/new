@@ -60,13 +60,19 @@ try:
 
     os.makedirs(SEGMENT_DIR, exist_ok=True)
     os.makedirs(USER_BIAS_DIR, exist_ok=True)
-
     
-    OPENAI_API_KEY = "your-openai-api-key"  # Replace with your actual OpenAI API key
-    # Initialize OpenAI client
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    # Get OpenAI API key from environment variable
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+    if OPENAI_API_KEY:
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        print("OpenAI client initialized successfully")
+    else:
+        print("WARNING: OPENAI_API_KEY not found in environment variables")
+        print("Some AI features will be disabled")
+        client = None
 except Exception as e:
-    pass
+    print(f"Error in config: {e}")
+    client = None
 
 DATABASE = "trading_app.db"
 # logging.basicConfig(level=logging.INFO)
@@ -568,12 +574,12 @@ def call_openai_warning(df: pd.DataFrame, predicted_emotion: str) -> Dict[str, A
     """Ask OpenAI to turn features into a human-friendly warning.
     Returns a robust JSON even if OpenAI isn't configured.
     """
-    if openai is None or not os.getenv("OPENAI_API_KEY"):
+    if client is None:  # ← Change this check
         return {
-            "insight": "Heuristic-only: model suggests {}.".format(predicted_emotion),
-            "warning": "Trading psychology signal generated without OpenAI.",
-            "recommendation": "Reduce leverage, avoid rapid entries, set stops.",
-            "advice": "Take a short break before placing the next trade.",
+            "insight": f"Heuristic-only: model suggests {predicted_emotion}.",
+            "warning": "OpenAI API key not configured.",
+            "recommendation": "Set OPENAI_API_KEY environment variable.",
+            "advice": "Configure OpenAI for personalized insights.",
         }
 
     try:
