@@ -36,7 +36,6 @@ import jwt
 import httpx
 import os
 import time
-from datetime import datetime, timedelta
 import logging
 
 
@@ -60,19 +59,19 @@ try:
 
     os.makedirs(SEGMENT_DIR, exist_ok=True)
     os.makedirs(USER_BIAS_DIR, exist_ok=True)
+
     
-    # Get OpenAI API key from environment variable
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-    if OPENAI_API_KEY:
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        print("OpenAI client initialized successfully")
-    else:
-        print("WARNING: OPENAI_API_KEY not found in environment variables")
-        print("Some AI features will be disabled")
-        client = None
+    # Securely obtain your API key from an environment variable
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # dont change this setting
+
+    client = openai.OpenAI(
+        base_url="https://openrouter.ai/api/v1",  # Correct base URL
+        api_key=OPENROUTER_API_KEY,
+    )
+    # Initialize OpenAI client
+    # client = openai.OpenAI(api_key=OPENAI_API_KEY) # Using Openai directly
 except Exception as e:
-    print(f"Error in config: {e}")
-    client = None
+    pass
 
 DATABASE = "trading_app.db"
 # logging.basicConfig(level=logging.INFO)
@@ -255,6 +254,7 @@ class UserTrade(BaseModel):
     timestamp: str
     emotion: str = "neutral"
     trigger_details: Optional[str] = None
+    trigger_summary: Optional[str] = None
     entry_price: float
     exit_price: float
     pnl: float
@@ -273,7 +273,8 @@ class UserTrade(BaseModel):
                 "pnl": 12.5,
                 "timestamp": "2025-04-05T10:22:11Z",
                 "emotion": "fomo",
-                "trigger_details": "Bought after 15% pump in 5min"
+                "trigger_details": "Bought after 15% pump in 5min",
+                "trigger_summary": "You just YOLO'd into a 28% pump after 3 wins — pure FOMO"
             }
         }
 
@@ -546,78 +547,311 @@ def predict_next_emotion(df: pd.DataFrame, user_id: str = None):
 
     return emotion, float(prob)
 
+# ==================== OPENROUTER VERSION - summarize_trigger_with_ai() ====================
+# Fully async, robust, uses your working OpenRouter setup
+# Turns raw trigger → natural, empathetic 1-sentence summary
+# Returns None if neutral or no trigger
 
-# Emotion detection
-def detect_emotion(df):
+async def summarize_trigger_with_ai(raw_trigger: str, emotion: str, wallet: str = "") -> Optional[str]:
+    """
+    Uses OpenRouter (deepseek-v3.1) to turn raw trigger into a direct, human sentence.
+    Example:
+    Raw: "FOMO: +24.1% in 8m after 2 win(s)"
+    → "You just chased a 24% pump in 8 minutes after winning twice — classic FOMO!"
+    """
+    
+    if not raw_trigger or emotion.lower() == 'neutral':
+        return None
+
+    # Shorten wallet for privacy
+    short_wallet = wallet[-6:] if wallet else "unknown"
+
+    # === PROMPT (Direct, empathetic, max 22 words) ===
+    prompt = f"""
+You are a calm, expert trading psychologist speaking directly to the trader.
+
+Emotion detected: {emotion.upper()}
+Raw trigger: {raw_trigger}
+Wallet ending: ...{short_wallet}
+
+In ONE short sentence (max 22 words), explain what just happened emotionally.
+Be direct, non-judgmental, and helpful — like a trusted mentor.
+No quotes, no markdown, no explanations.
+""".strip()
+
+    try:
+        # === CALL OPENROUTER (exact same as your working script) ===
+        response = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model="nex-agi/deepseek-v3.1-nex-n1:free",  # Your proven model
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=60,
+                timeout=20
+            )
+        )
+
+        summary = response.choices[0].message.content.strip()
+
+        # Clean any markdown/quotes
+        summary = summary.strip('"\'').strip()
+
+        # Final safety: if too long or garbage, fallback
+        if len(summary.split()) > 30 or not summary:
+            return raw_trigger
+
+        return summary
+
+    except Exception as e:
+        print(f"OpenRouter trigger summary failed: {e}")
+        # Graceful fallback to raw (still useful)
+        return raw_trigger    
+
+
+# ==================== FIXED & WORKING VERSION ====================
+async def detect_emotion(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detects emotion using rules + enriches with AI summary (OpenRouter)
+    Returns df with 'emotion', 'trigger_details', and 'trigger_summary'
+    """
+    if df.empty or len(df) < 2:
+        df['emotion'] = 'neutral'
+        df['trigger_details'] = None
+        df['trigger_summary'] = None
+        return df
+
     df['emotion'] = 'neutral'
     df['trigger_details'] = None
+
+    # Rule-based detection (raw triggers)
     for i in range(1, len(df)):
-        prev_row, curr_row = df.iloc[i-1], df.iloc[i]
-        if (curr_row['price_change_pct'] > 20 and curr_row['time_diff'] < 30 and curr_row['win_streak'] > 1):
+        prev = df.iloc[i-1]
+        curr = df.iloc[i]
+
+        if (curr.get('price_change_pct', 0) > 20 and 
+            curr.get('time_diff', 60) < 30 and 
+            prev.get('win_streak', 0) > 1):
             df.loc[i, 'emotion'] = 'fomo'
-            df.loc[i, 'trigger_details'] = f"Price spike: {curr_row['price_change_pct']:.2f}%, win streak: {curr_row['win_streak']}"
-        elif (curr_row['time_diff'] < 2 and prev_row['consecutive_losses'] >= 2):
+            df.loc[i, 'trigger_details'] = (
+                f"FOMO: +{curr['price_change_pct']:.1f}% price spike in {curr['time_diff']:.0f} min "
+                f"after {int(prev['win_streak'])} win(s)"
+            )
+
+        elif (curr.get('time_diff', 60) < 2 and prev.get('consecutive_losses', 0) >= 2):
             df.loc[i, 'emotion'] = 'revenge'
-            df.loc[i, 'trigger_details'] = f"After {prev_row['consecutive_losses']} losses, latency: {curr_row['time_diff']}"
-        elif (curr_row['position_change'] > 0.5 and prev_row['consecutive_wins'] >= 2):
+            df.loc[i, 'trigger_details'] = (
+                f"Revenge: Trade {curr['time_diff']:.1f} min after {int(prev['consecutive_losses'])} loss(es)"
+            )
+
+        elif (curr.get('position_change', 0) > 0.5 and prev.get('consecutive_wins', 0) >= 2):
             df.loc[i, 'emotion'] = 'greed'
-            df.loc[i, 'trigger_details'] = f"After {prev_row['consecutive_wins']} wins, pos change: {curr_row['position_change']:.2f}"
-        elif (curr_row['time_diff'] < 1 and curr_row['pnl'] > 0 and abs(curr_row['pnl']) < 10):
+            df.loc[i, 'trigger_details'] = (
+                f"Greed: Position increased {curr['position_change']*100:.0f}% after {int(prev['consecutive_wins'])} wins"
+            )
+
+        elif (curr.get('time_diff', 60) < 1 and curr.get('pnl', 0) > 0 and abs(curr.get('pnl', 0)) < 10):
             df.loc[i, 'emotion'] = 'fear'
-            df.loc[i, 'trigger_details'] = f"Early close: {curr_row['pnl']:.2f}, latency: {curr_row['time_diff']}"
+            df.loc[i, 'trigger_details'] = (
+                f"Fear: Early exit with +${curr['pnl']:.1f} profit in {curr['time_diff']:.1f} min"
+            )
+
+    # === AI ENRICHMENT (OpenRouter) ===
+    df['trigger_summary'] = None
+
+    if not OPENROUTER_API_KEY:
+        # No API key → skip AI
+        return df
+
+    tasks = []
+    for idx, row in df.iterrows():
+        if row['emotion'] != 'neutral' and row['trigger_details']:
+            tasks.append(
+                summarize_trigger_with_ai(
+                    raw_trigger=row['trigger_details'],
+                    emotion=row['emotion'],
+                    wallet=row.get('wallet', '')
+                )
+            )
+        else:
+            tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
+
+    # Run all AI summaries in parallel
+    summaries = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Handle any failed tasks
+    final_summaries = []
+    for result in summaries:
+        if isinstance(result, Exception):
+            final_summaries.append(None)
+        else:
+            final_summaries.append(result)
+
+    df['trigger_summary'] = final_summaries
+
     return df
 
 # ---------------------------------------------------------
-# OpenAI helper
+# OpenAI helper could use either one of them
 # ---------------------------------------------------------
 def call_openai_warning(df: pd.DataFrame, predicted_emotion: str) -> Dict[str, Any]:
-    """Ask OpenAI to turn features into a human-friendly warning.
-    Returns a robust JSON even if OpenAI isn't configured.
     """
-    if client is None:  # ← Change this check
+    Uses OpenRouter to generate human-friendly trading psychology warning.
+    Falls back to robust heuristics if API fails or key missing.
+    Returns: {"insight", "warning", "recommendation", "advice"}
+    """
+    
+    # === FALLBACK IF NO API KEY OR OPENAI NOT AVAILABLE ===
+    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your-openai-api-key":
         return {
-            "insight": f"Heuristic-only: model suggests {predicted_emotion}.",
-            "warning": "OpenAI API key not configured.",
-            "recommendation": "Set OPENAI_API_KEY environment variable.",
-            "advice": "Configure OpenAI for personalized insights.",
+            "insight": f"Heuristic-only: {predicted_emotion} pattern detected.",
+            "warning": "AI insight unavailable — using built-in psychology rules.",
+            "recommendation": "Reduce position size and avoid rapid trades.",
+            "advice": "Take a 10-minute break before your next decision."
         }
 
     try:
-        prompt = (
-            "You are a trading-psychology assistant. Given the following last records "
-            "(spot and/or futures), summarize a concise warning and recommendation in JSON "
-            "with keys: insight, warning, recommendation, advice.\n\n"
-            f"Predicted emotion: {predicted_emotion}\n"
-            f"Records (tail 10 rows):\n{df.tail(10).to_json(orient='records')}"
-        )
-        resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        # === BUILD PROMPT (same style as your original) ===
+        prompt = f"""
+You are an expert trading psychologist.
+Analyze the last 10 trades and the predicted emotion below.
+Respond in JSON only with these exact keys:
+- insight: Deep observation about behavior
+- warning: Direct risk callout
+- recommendation: Actionable trading fix
+- advice: Personal mindset suggestion
+
+Predicted emotion: {predicted_emotion}
+Recent trades (last 10):
+{df.tail(10).to_json(orient='records', date_format='iso')}
+
+Respond with valid JSON only. No explanations.
+""".strip()
+
+        # === CALL OPENROUTER (exact same as your working script) ===
+        completion = client.chat.completions.create(
+            model="nex-agi/deepseek-v3.1-nex-n1:free",  # Your working model
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+            temperature=0.3,
+            max_tokens=300
         )
-        content = resp.choices[0].message.content if resp and resp.choices else "{}"
+
+        content = completion.choices[0].message.content.strip()
+
+        # Clean common markdown wrappers
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        # === PARSE JSON SAFELY ===
         try:
             parsed = json.loads(content)
-            # minimal validation
-            for k in ["insight", "warning", "recommendation", "advice"]:
-                parsed.setdefault(k, "")
+            # Ensure all required keys exist
+            for key in ["insight", "warning", "recommendation", "advice"]:
+                parsed.setdefault(key, f"Stay disciplined during {predicted_emotion} moments.")
             return parsed
-        except Exception:
+        except json.JSONDecodeError:
+            # Fallback if LLM didn't return clean JSON
             return {
-                "insight": f"{predicted_emotion} detected. Keep risk in check.",
-                "warning": "LLM returned non-JSON; using safe defaults.",
-                "recommendation": "Tighten risk, avoid overtrading.",
-                "advice": "Journal your thoughts and wait 15 minutes.",
+                "insight": f"{predicted_emotion.capitalize()} behavior detected in recent trades.",
+                "warning": "AI response was not structured — using safe defaults.",
+                "recommendation": "Lower leverage and wait for clearer signals.",
+                "advice": "Journal your thoughts: Why did you feel {predicted_emotion}?"
             }
+
     except Exception as e:
-        print(f"OpenAI call failed: {e}")
+        print(f"OpenRouter call failed: {e}")
+        # Final safety net
         return {
-            "insight": f"{predicted_emotion} behavior inferred.",
-            "warning": "OpenAI unavailable; heuristic advice only.",
-            "recommendation": "Lower size and set clear invalidation.",
-            "advice": "Step away briefly, review your plan.",
+            "insight": f"Strong {predicted_emotion} signal from your trading pattern.",
+            "warning": "Unable to get AI insight — relying on core rules.",
+            "recommendation": "Pause trading for 15 minutes and reassess risk.",
+            "advice": "Your emotions are valid — but don't let them drive decisions."
+        }
+async def get_emotion_warning(wallet_df: pd.DataFrame, predicted_emotion: str) -> Dict[str, Any]:
+    """
+    Uses OpenRouter (deepseek-v3.1) to generate personalized trading psychology warning.
+    Falls back to safe defaults if API fails.
+    """
+    
+    # Safety check
+    if wallet_df.empty or 'wallet' not in wallet_df.columns:
+        return {
+            "insight": "No trade data available yet.",
+            "warning": "Start trading to receive personalized insights.",
+            "recommendation": "Make your first trade with small size.",
+            "advice": "Focus on learning, not profits."
         }
 
+    # Get last 3 trades
+    recent_trades = wallet_df.tail(3).to_dict(orient='records')
+    wallet_address = wallet_df['wallet'].iloc[0]
+
+    # === PROMPT (Clear, direct, psychology-focused) ===
+    prompt = f"""
+You are an elite trading psychologist.
+A trader with wallet {wallet_address[-8:]}... is showing strong signs of {predicted_emotion.upper()}.
+
+Last 3 trades:
+{json.dumps(recent_trades, indent=2, default=str)}
+
+Respond in valid JSON only with these exact keys:
+- insight: Deep observation about their emotional state
+- warning: Direct risk they're facing right now
+- recommendation: Immediate action to take
+- advice: Long-term mindset shift
+
+Keep each value concise (1-2 sentences). Be empathetic but firm.
+""".strip()
+
+    # === CALL OPENROUTER (exact same as your working script) ===
+    try:
+        response = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model="nex-agi/deepseek-v3.1-nex-n1:free",  # Your proven model
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=300,
+                timeout=30
+            )
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # Clean markdown if present
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        # Parse JSON safely
+        try:
+            parsed = json.loads(content)
+            # Ensure all keys exist
+            for key in ["insight", "warning", "recommendation", "advice"]:
+                if key not in parsed:
+                    parsed[key] = f"Stay mindful during {predicted_emotion} moments."
+            return parsed
+        except json.JSONDecodeError:
+            # Fallback if not JSON
+            return {
+                "insight": f"Strong {predicted_emotion} pattern detected in recent trades.",
+                "warning": "Emotional trading can lead to poor decisions.",
+                "recommendation": "Pause and reassess your strategy.",
+                "advice": "Your emotions are signals — listen, don't obey blindly."
+            }
+
+    except Exception as e:
+        print(f"OpenRouter warning generation failed: {e}")
+        # Final safety net
+        return {
+            "insight": f"Your trading shows signs of {predicted_emotion}.",
+            "warning": "This emotional state often leads to overtrading.",
+            "recommendation": "Reduce position size and wait for clearer signals.",
+            "advice": "Take a break. The market will still be here in 30 minutes."
+        }
 
 # =========================
 # FIXED FULL RETRAIN — NEVER BREAKS AGAIN
@@ -878,32 +1112,6 @@ async def generate_ai_insights_and_triggers(user_id: str) -> dict:
              "iconColor": "text-red-400" if next_emotion in ["revenge","fomo"] else "text-green-400"}
         ]
     }
-
-# Warning and recommendation generation
-async def get_emotion_warning(wallet_df, predicted_emotion):
-    recent_trades = wallet_df.tail(3).to_dict(orient='records')
-    prompt = f"""
-    User with wallet {wallet_df['wallet'].iloc[0]} has shown a predicted emotion of {predicted_emotion} based on their last 3 trades. 
-    Trade data: {json.dumps(recent_trades, default=str)}
-    Provide insight, warning, recommendation, and advice in JSON format.
-    """
-    try:
-        response = await asyncio.to_thread(
-            lambda: client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                timeout=30
-            )
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print(f"OpenAI API error: {e}")
-        return {
-            "insight": "Error fetching insight",
-            "warning": "Unable to generate warning",
-            "recommendation": "None",
-            "advice": "Contact support"
-        }
 
 # Database setup
 def init_db():
@@ -1313,18 +1521,6 @@ async def verify_evm_signature(address: str, signature: str, message: str) -> bo
         logger.error(f"signature: {signature}")
         logger.error(f"address: {address}")
         return False
-
-# async def verify_solana_signature(address: str, signature: str, message: str) -> bool:
-#     try:
-#         from nacl.signing import VerifyKey
-#         sig_bytes = base58.b58decode(signature)
-#         pubkey_bytes = base58.b58decode(address)
-#         verify_key = VerifyKey(pubkey_bytes)
-#         verify_key.verify(message.encode(), sig_bytes)
-#         return True
-#     except Exception as e:
-#         logger.error(f"Solana signature error: {e}")
-#         return False
 
 async def verify_solana_signature(address: str, signature: str, message: str) -> bool:
     try:
@@ -3283,7 +3479,7 @@ def get_archetype_description(name: str) -> str:
 
 #     try:
 #         response = openai.chat.completions.create(
-#             model="gpt-4o",
+#             model="nex-agi/deepseek-v3.1-nex-n1:free",
 #             messages=[{"role": "user", "content": prompt}],
 #             temperature=0.7,
 #             max_tokens=300
