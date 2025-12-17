@@ -1,22 +1,22 @@
 fastapi==0.110.2
 uvicorn==0.34.0
 pydantic==2.12.5
-sqlite3==Not Installed
+sqlite3
 pandas==2.2.1
 joblib==1.5.1
-sklearn==Not Installed
-logging==Not Installed
+sklearn
+logging
 websockets==12.0
 openai==2.9.0
 httpx==0.28.1
-json==Not Installed
-asyncio==Not Installed
+json
+asyncio
 numpy==1.26.4
-re==Not Installed
-contextlib==Not Installed
-enum==Not Installed
+re
+contextlib
+enum
 eth_account==0.13.5
 web3==7.8.0
 solana==0.36.10
 base58==2.1.1
-logging==Not Installed
+logging
