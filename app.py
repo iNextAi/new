@@ -42,7 +42,7 @@ import logging
 import os
 
 # AUTO TEST MODE — Remove this line when deploying to Render!
-os.environ["TEST_MODE"] = "true"   # ← DELETE THIS LINE IN PRODUCTION!
+# os.environ["TEST_MODE"] = "true"   # ← DELETE THIS LINE IN PRODUCTION!
 
 # Configuration and ML model load
 try:
@@ -1496,31 +1496,13 @@ def rate_limit(request: Request, limit: int = 100):
 # ==================== SIGNATURE VERIFICATION ====================
 async def verify_evm_signature(address: str, signature: str, message: str) -> bool:
     try:
-        # Generate a new private key
-        account = Account.create()
-        private_key = "0x4f3edf983ac636a65a8422f5e852bcedb49df3813d1da5c39a84dd98d0731e47"
-
-
-        # Set up the account
-        account = Account.from_key(private_key)
-        w3 = Web3()
         message_hash = encode_defunct(text=message)
-        signature = account.sign_message(message_hash)
-
-        # Get the signature as a hexadecimal string
-        signature = signature.signature.hex()
-
-        recovered = w3.eth.account.recover_message(message_hash, signature=signature)
-        logger.info(f"signature: {signature}")
-        logger.info(f"recovered: {recovered}")
-        logger.info(f"address: {address}")
+        recovered = Web3().eth.account.recover_message(message_hash, signature=signature)
         return recovered.lower() == address.lower()
     except Exception as e:
-        logger.error(f"EVM signature error: {e}")
-        # logger.error(f"recovered: {recovered}")
-        logger.error(f"signature: {signature}")
-        logger.error(f"address: {address}")
+        logger.error(f"EVM signature verification failed: {e}")
         return False
+
 
 async def verify_solana_signature(address: str, signature: str, message: str) -> bool:
     try:
