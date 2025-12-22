@@ -1634,7 +1634,7 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
             chain = "ethereum"
 
         elif w_type == "phantom":
-            if not await verify_solana_signature(address, sig,sig, msg):
+            if not await verify_solana_signature(address, sig, msg):
                 raise HTTPException(401, detail="Invalid Solana signature")
             balance = await get_sol_balance(address)
             chain = "solana"
