@@ -73,7 +73,7 @@ try:
 except Exception as e:
     pass
 
-DATABASE = "trading_app.db"
+DATABASE = "iNextAi_trading_app.db"
 # logging.basicConfig(level=logging.INFO)
 # logger = logging.getLogger(__name__)
 
