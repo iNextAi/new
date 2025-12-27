@@ -1594,17 +1594,13 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
     # === DEV/TEST MODE — allow obvious dummy values (so Swagger stops screaming red) ===
     if address.lower() in {"0x71C7656EC7ab88b098defB751B7401B5f6d8976", "demo", "123", "0xtest1234", "aaaaa-aa", "0xt71C7656EC7ab88b098defB751B7401B5f6d8976F"}:
         balance = {"native": 0.0, "usd": 0.0, "symbol": "LSK"}
-        response = JSONResponse({
-            "status": "connected",
-            "userId": "test_user1234",
-            "wallet": address,
-            "type": w_type,
-            "chain": "etherum",
-            "balance": balance,
-            "alert": "DEMO Wallet connected with DEMO balance & secure auth",
-            "message": msg,
-            "sign": sig
-        })
+        status = "connected",
+        userId = "test_user1234",
+        w_type = "demo",
+        chain = "etherum",
+        balance = balance,
+        
+        
         conn = sqlite3.connect(DATABASE)
         c = conn.cursor()
         c.execute("""
@@ -1612,13 +1608,27 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
             (user_id, wallet_address, wallet_type, chain, balance_native, balance_usd, last_connected)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
-            user_id, address.lower(), w_type, chain,
+            userId, address.lower(), w_type, chain,
             balance['native'], balance['usd'], datetime.utcnow().isoformat()
         ))
         conn.commit()
         conn.close()
-        return response
         
+
+        response = JSONResponse({
+            "status": "connected",
+            "userId": "test_user1234",
+            "wallet": address,
+            "type": w_type,
+            "chain": "etherum",
+            "balance": balance,
+            "balance_usd": "null",
+            "last_connected": "null",
+            "alert": "DEMO Wallet connected with DEMO balance & secure auth",
+            "message": msg,
+            "sign": sig
+        })
+        return response
 
     if not address or not sig or not msg:
         raise HTTPException(400, detail="Missing required fields")
@@ -1652,7 +1662,7 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
         c = conn.cursor()
         c.execute("""
             INSERT OR REPLACE INTO users 
-            (user_id, wallet_address, wallet_type, chain, balance_native, balance_usd, last_connected)
+            (user_id, wallet_address, wallet_type, chain, balance_native, balance, balance_usd, last_connected)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id, address.lower(), w_type, chain,
@@ -3355,149 +3365,6 @@ def get_archetype_description(name: str) -> str:
     }
     return descriptions.get(name, "Keep building. You're on the path.")
 
-"""# ---------------------------------------------------------
-# FINAL ARCHETYPE ENGINE — Powered by OpenAI + Your Real Data
-# ---------------------------------------------------------
-"""
-# @app.post(
-#     "/api/archetype/assign/{user_id}",
-#     response_model=ArchetypeResponse,
-#     summary="AI-Powered Trading Archetype (No Rules. Only Your Behavior.)"
-# )
-# async def assign_archetype(
-#     user_id: str = Path(..., example="user123"),
-#     days: int = Query(30, ge=7, le=365, description="Analysis period")
-# ):
-#     """
-#     The ULTIMATE archetype system.
-#     No hardcoded scores.
-#     No fake rules.
-#     Just your real trades → fed to OpenAI → returns your TRUE archetype.
-#     """
-#     conn = sqlite3.connect(DATABASE)
-#     try:
-#         start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
-#         df = pd.read_sql_query(
-#             "SELECT * FROM trades WHERE user_id = ? AND timestamp >= ? ORDER BY timestamp",
-#             conn,
-#             params=(user_id, start_date)
-#         )
-#     except Exception as e:
-#         print(f"[Archetype] DB error: {e}")
-#         df = pd.DataFrame()
-#     finally:
-#         conn.close()
-
-#     if df.empty or len(df) < 5:
-#         return ArchetypeResponse(
-#             user_id=user_id,
-#             archetype="The Seeker",
-#             confidence=100,
-#             traits=["Curious", "Learning", "Beginning"],
-#             description="You haven't traded enough yet for a full archetype. Every master was once a beginner.",
-#             recommendations=[
-#                 "Make your first 50 trades with small size",
-#                 "Journal every entry: Why did you click?",
-#                 "Losses are tuition. Pay attention."
-#             ],
-#             strength="Open-mindedness",
-#             weakness="None yet — you're pure potential",
-#             famous_like="Warren Buffett in 1950",
-#             advice="The best time to start was yesterday. The second best is now."
-#         )
-
-#     # === Run your real engine ===
-#     df['timestamp'] = pd.to_datetime(df['timestamp'])
-#     df = engineer_features(df)
-#     df = detect_emotion(df)
-
-#     # === Extract real behavioral DNA ===
-#     stats = {
-#         "total_trades": len(df),
-#         "win_rate": round((df['is_win'].sum() / len(df)) * 100, 1),
-#         "avg_hold_minutes": round(df['time_diff'].mean(), 1),
-#         "max_loss_streak": int(df['consecutive_losses'].max()),
-#         "total_pnl": round(df['pnl'].sum(), 2),
-#         "fomo_trades": int((df['emotion'] == 'fomo').sum()),
-#         "revenge_trades": int((df['emotion'] == 'revenge').sum()),
-#         "fear_trades": int((df['emotion'] == 'fear').sum()),
-#         "greed_trades": int((df['emotion'] == 'greed').sum()),
-#         "most_common_trigger": df['trigger_details'].mode().iloc[0] if not df['trigger_details'].mode().empty else "None"
-#     }
-
-#     # === Let OpenAI name your TRUE archetype ===
-#     prompt = f"""
-# You are a world-class trading psychologist.
-# Analyze this trader's real behavior over {days} days and assign them ONE definitive archetype.
-
-# Real Data:
-# - Total trades: {stats['total_trades']}
-# - Win rate: {stats['win_rate']}%
-# - Average time between trades: {stats['avg_hold_minutes']} minutes
-# - Longest loss streak: {stats['max_loss_streak']}
-# - Total PnL: ${stats['total_pnl']:+,.2f}
-# - FOMO trades: {stats['fomo_trades']}
-# - Revenge trades: {stats['revenge_trades']}
-# - Fear trades: {stats['fear_trades']}
-# - Greed trades: {stats['greed_trades']}
-# - Most common trigger: {stats['most_common_trigger']}
-
-# Assign ONE archetype from these (or create a better one):
-# The Diamond Hands, The Paper Hands, The Revenge Ape, The FOMO Chaser, The Zen Master, The Gambler, The Sniper, The Scalper, The HODLing Monk, The Emotional Wreck
-
-# Then respond in JSON:
-# {{
-#   "archetype": "Name",
-#   "confidence": 85,
-#   "traits": ["list", "of", "3-5", "traits"],
-#   "description": "One powerful sentence",
-#   "strength": "Their super power",
-#   "weakness": "Their kryptonite",
-#   "famous_like": "They're like X in trading",
-#   "advice": "One profound piece of advice"
-# }}
-# """
-
-#     try:
-#         response = openai.chat.completions.create(
-#             model="nex-agi/deepseek-v3.1-nex-n1:free",
-#             messages=[{"role": "user", "content": prompt}],
-#             temperature=0.7,
-#             max_tokens=300
-#         )
-#         raw = response.choices[0].message.content.strip()
-#         if raw.startswith("```json"):
-#             raw = raw[7:-3]
-#         ai_result = json.loads(raw)
-#     except Exception as e:
-#         print(f"OpenAI archetype failed: {e}")
-#         ai_result = {
-#             "archetype": "The Survivor" if stats['total_pnl'] > 0 else "The Learner",
-#             "confidence": 75,
-#             "traits": ["Resilient", "Growing", "Real"],
-#             "description": "You're trading real money with real emotions. That's already elite.",
-#             "strength": "You're still here",
-#             "weakness": "Emotional leakage",
-#             "famous_like": "Every pro trader in their first year",
-#             "advice": "The game is not against the market. It's against your former self."
-#         }
-
-#     return ArchetypeResponse(
-#         user_id=user_id,
-#         archetype=ai_result.get("archetype", "The Trader"),
-#         confidence=ai_result.get("confidence", 88),
-#         traits=ai_result.get("traits", ["Real", "Growing"]),
-#         description=ai_result.get("description", "You're becoming."),
-#         recommendations=[
-#             ai_result.get("advice", "Keep going."),
-#             ai_result.get("strength", "You have something most don't: persistence."),
-#             f"Based on {stats['total_trades']} real trades"
-#         ],
-#         strength=ai_result.get("strength"),
-#         weakness=ai_result.get("weakness"),
-#         famous_like=ai_result.get("famous_like")
-#     )
-
 
 
 # =========================
@@ -3684,7 +3551,6 @@ async def analyze_market_trends(
 
 # ---------------------------------------------------------
 # FINAL & PERFECT Technical Analysis Engine
-# Clean, Fast, Real, No Fake Data
 # ---------------------------------------------------------
 
 def calculate_technical_indicators(df: pd.DataFrame, symbol: str) -> dict:
