@@ -1276,6 +1276,10 @@ def init_db():
             user_id TEXT PRIMARY KEY,
             balance REAL,
             wallet_address TEXT
+            wallet_type TEXT,
+            chain TEXT,
+            balance_native REAL,
+            last_connected TEXT        
         )
     """)
     cursor.execute("""
@@ -1601,6 +1605,18 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
             "message": msg,
             "sign": sig
         })
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute("""
+            INSERT OR REPLACE INTO users 
+            (user_id, wallet_address, wallet_type, chain, balance_native, balance_usd, last_connected)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id, address.lower(), w_type, chain,
+            balance['native'], balance['usd'], datetime.utcnow().isoformat()
+        ))
+        conn.commit()
+        conn.close()
         return response
         
 
@@ -1686,7 +1702,6 @@ async def connect_wallet_secure(request: WalletConnectRequest, http_request: Req
     except Exception as e:
         logger.error(f"Wallet connect failed: {e}")
         raise HTTPException(500, detail="Connection failed")
-    
 
 
 from typing import List
@@ -2198,22 +2213,6 @@ async def place_order(trade: TradeRequest):
     trade_id = f"trade_{hash(user_id + str(datetime.utcnow().timestamp()))}"
     timestamp = datetime.utcnow().isoformat()
 
-    # === 1. Get REAL market price from Binance (robust fallback) ===
-    # entry_price = None
-    # try:
-    #     async with httpx.AsyncClient(timeout=5.0) as client:
-    #         symbol = f"{trade.inToken}{trade.outToken}".upper()
-    #         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    #         resp = await client.get(url)
-    #         if resp.status_code == 200:
-    #             data = resp.json()
-    #             entry_price = float(data["price"])
-    # except:
-    #     pass  # silent fallback
-
-    # # Final fallback
-    # if not entry_price or entry_price <= 0:
-    #     entry_price = trade.volumeUsd / trade.amountIn if trade.amountIn > 0 else 3000.0
 
     """ === 1. Get REAL-TIME price from global cache (blazing fast + always accurate) ==="""    
     try:
